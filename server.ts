@@ -1,4 +1,5 @@
 import express from 'express';
+import { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
@@ -511,7 +512,7 @@ Respond directly to the user's inquiry:
 - Reference specific clauses (e.g. Clause 4.2.2 for packaging, Clause 3.0 or 8.0 for LD limits, or Clause 32 for Gate Entry Invoicing rules).
 - Support with real calculations where needed.
 - Keep the tone encouraging, professional, and procurement-intelligent.
-    `;
+`;
 
     // Format chat history for Gemini
     const chat = aiClient.chats.create({
@@ -663,7 +664,7 @@ ${JSON.stringify(compactPOs, null, 1)}
 
 Active Alarms log (Token-Compressed):
 ${JSON.stringify(compactAlerts, null, 1)}
-    `;
+`;
 
     // 1. If Groq Key is available, prioritize it
     if (activeGroqKey) {
@@ -721,7 +722,6 @@ ${JSON.stringify(compactAlerts, null, 1)}
     // 3. Absolute offline fallback if both AI models are unavailable (or no keys provisioned)
     const fallbackReport = buildLocalStrategicReport(pos || [], alerts || []);
     res.json({ report: fallbackReport, provider: 'offline_engine' });
-
   } catch (err: any) {
     console.error('Audit Report compiles error:', err);
     // Even on total unexpected crash, give the offline report so user never sees a broken compilation screen!
@@ -885,6 +885,15 @@ async function integrateServer() {
   });
 }
 
-integrateServer().catch((e) => {
-  console.error('Failed to integrate development server:', e);
-});
+// Only run the server when this file is executed directly (not when imported by Vercel)
+if (import.meta.url === `file://${process.argv[1]}`) {
+  integrateServer().catch((e) => {
+    console.error('Failed to integrate development server:', e);
+    process.exit(1);
+  });
+}
+
+// Export the Express app as a Vercel-compatible handler.
+export default async function handler(req: Request, res: Response) {
+  app(req, res);
+}
