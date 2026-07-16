@@ -2,7 +2,6 @@ import express from 'express';
 import { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { INITIAL_POS, INITIAL_ALERTS } from './src/data.js';
@@ -865,6 +864,7 @@ Guidelines for multi-turn conversational response:
 async function integrateServer() {
   if (process.env.NODE_ENV !== 'production') {
     // In development mode, bootstrap Vite in middlewareMode so the preview window refreshes properly
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
