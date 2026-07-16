@@ -886,7 +886,17 @@ async function integrateServer() {
 }
 
 // Only run the server when this file is executed directly (not when imported by Vercel)
-if (import.meta.url === `file://${process.argv[1]}`) {
+let isMain = false;
+if (import.meta.url !== undefined && typeof import.meta.url === 'string') {
+  // ES module
+  isMain = import.meta.url === `file://${process.argv[1]}`;
+} else {
+  // Assume CommonJS
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const isMainModule = require.main === module;
+  isMain = isMainModule;
+}
+if (isMain) {
   integrateServer().catch((e) => {
     console.error('Failed to integrate development server:', e);
     process.exit(1);
