@@ -1,7 +1,7 @@
 import express from 'express';
 import { Request, Response } from 'express';
 import path from 'path';
-import fs from 'fs';
+import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { INITIAL_POS, INITIAL_ALERTS } from './src/data.js';
@@ -14,38 +14,110 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
-// Paths for persistence within the server environment
-const DB_FILE = path.join(process.cwd(), 'pos-db.json');
-const ALERTS_FILE = path.join(process.cwd(), 'alerts-db.json');
+// -------------------------------------------------------------
+// SUPABASE PERSISTENCE (replaces the old pos-db.json / alerts-db.json
+// file-based storage, which did not survive across Vercel's ephemeral,
+// per-invocation serverless filesystem).
+//
+// IMPORTANT: this uses the SERVICE ROLE key, not the anon key, because
+// these routes need to read/write without going through client-side
+// RLS policies. Never expose SUPABASE_SERVICE_ROLE_KEY to the frontend
+// (the /api/supabase-config route further up only ever hands out the
+// anon key for that reason).
+//
+// Expected tables (create these once in the Supabase SQL editor):
+//
+//   create table pos_db (
+//     id text primary key,
+//     data jsonb not null,
+//     created_at timestamptz not null default now()
+//   );
+//
+//   create table alerts_db (
+//     id text primary key,
+//     data jsonb not null,
+//     created_at timestamptz not null default now()
+//   );
+//
+// Each row stores one PO / alert as a jsonb blob under `data`, keyed by
+// its own id. This keeps the shape identical to the old JSON files and
+// means readPOs/writePOs/readAlerts/writeAlerts can keep the exact same
+// signatures the rest of the routes already rely on.
+// -------------------------------------------------------------
+const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
+const supabaseServiceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || '').trim();
 
-// Initialize local DB files if they don't exist
-function initDB() {
-  try {
-    if (!fs.existsSync(DB_FILE)) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(INITIAL_POS, null, 2));
-      console.log('Seeded pos-db.json with initial TATA POs.');
-    }
-    if (!fs.existsSync(ALERTS_FILE)) {
-      fs.writeFileSync(ALERTS_FILE, JSON.stringify(INITIAL_ALERTS, null, 2));
-      console.log('Seeded alerts-db.json with initial alarms.');
-    }
-  } catch (error) {
-    console.error('Error seeding databases:', error);
-  }
+if (!supabaseUrl || !supabaseServiceKey) {
+  console.warn('Supabase credentials missing (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY). PO/Alert persistence will fail until these are set.');
 }
-initDB();
+
+const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+
+const POS_TABLE = 'pos_db';
+const ALERTS_TABLE = 'alerts_db';
+
+// Idempotent one-time seed guard. Runs at most once per warm container;
+// serverless cold starts will re-check but the count-based guard inside
+// keeps it a no-op once the tables actually have data.
+let dbInitPromise: Promise<void> | null = null;
+function initDB(): Promise<void> {
+  if (!dbInitPromise) {
+    dbInitPromise = (async () => {
+      try {
+        const { count: poCount, error: poCountErr } = await supabase
+          .from(POS_TABLE)
+          .select('id', { count: 'exact', head: true });
+        if (poCountErr) {
+          console.error('Error checking pos_db seed state:', poCountErr.message);
+        } else if ((poCount || 0) === 0 && INITIAL_POS.length) {
+          const { error } = await supabase.from(POS_TABLE).insert(
+            INITIAL_POS.map(p => ({ id: p.id, data: p }))
+          );
+          if (error) console.error('Error seeding pos_db:', error.message);
+          else console.log('Seeded pos_db with initial TATA POs.');
+        }
+
+        const { count: alertCount, error: alertCountErr } = await supabase
+          .from(ALERTS_TABLE)
+          .select('id', { count: 'exact', head: true });
+        if (alertCountErr) {
+          console.error('Error checking alerts_db seed state:', alertCountErr.message);
+        } else if ((alertCount || 0) === 0 && INITIAL_ALERTS.length) {
+          const { error } = await supabase.from(ALERTS_TABLE).insert(
+            INITIAL_ALERTS.map(a => ({ id: a.id, data: a }))
+          );
+          if (error) console.error('Error seeding alerts_db:', error.message);
+          else console.log('Seeded alerts_db with initial alarms.');
+        }
+      } catch (error: any) {
+        console.error('Error seeding databases:', error.message);
+        // Allow a retry on the next call rather than caching a hard failure forever.
+        dbInitPromise = null;
+      }
+    })();
+  }
+  return dbInitPromise;
+}
+// Kick off seeding in the background at module load too (best-effort; the
+// awaited call inside readPOs/readAlerts is what actually guarantees order).
+initDB().catch(() => {});
 
 // Helper functions for reading/writing persistent data
 async function readPOs(): Promise<PO[]> {
+  await initDB();
   try {
-    if (fs.existsSync(DB_FILE)) {
-      const data = await fs.promises.readFile(DB_FILE, 'utf8');
-      return JSON.parse(data);
-    }
-  } catch (e) {
-    console.error('Error reading PO db:', e);
+    const { data, error } = await supabase
+      .from(POS_TABLE)
+      .select('data')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return (data || []).map((row: any) => row.data as PO);
+  } catch (e: any) {
+    console.error('Error reading POs from Supabase:', e.message);
+    return INITIAL_POS;
   }
-  return INITIAL_POS;
 }
 
 async function writePOs(pos: PO[]) {
@@ -56,23 +128,64 @@ async function writePOs(pos: PO[]) {
     seen.add(p.id);
     return true;
   });
-  await fs.promises.writeFile(DB_FILE, JSON.stringify(uniquePos, null, 2), 'utf8');
+
+  // Mirrors the old "overwrite the whole file" semantics: upsert everything
+  // that should exist, then delete anything left over that isn't in the
+  // new set. Upsert-then-delete (rather than delete-then-insert) keeps the
+  // window where data could look "missing" to a concurrent reader as small
+  // as possible.
+  if (uniquePos.length) {
+    const { error: upsertErr } = await supabase
+      .from(POS_TABLE)
+      .upsert(uniquePos.map(p => ({ id: p.id, data: p })), { onConflict: 'id' });
+    if (upsertErr) throw new Error(`Supabase PO upsert failed: ${upsertErr.message}`);
+  }
+
+  const idsToKeep = uniquePos.map(p => p.id);
+  const del = supabase.from(POS_TABLE).delete();
+  const { error: delErr } = idsToKeep.length
+    ? await del.not('id', 'in', `(${idsToKeep.map(id => `"${id}"`).join(',')})`)
+    : await del.neq('id', '__none__');
+  if (delErr) throw new Error(`Supabase PO cleanup failed: ${delErr.message}`);
 }
 
 async function readAlerts(): Promise<SystemAlert[]> {
+  await initDB();
   try {
-    if (fs.existsSync(ALERTS_FILE)) {
-      const data = await fs.promises.readFile(ALERTS_FILE, 'utf8');
-      return JSON.parse(data);
-    }
-  } catch (e) {
-    console.error('Error reading alerts db:', e);
+    const { data, error } = await supabase
+      .from(ALERTS_TABLE)
+      .select('data')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return (data || []).map((row: any) => row.data as SystemAlert);
+  } catch (e: any) {
+    console.error('Error reading alerts from Supabase:', e.message);
+    return INITIAL_ALERTS;
   }
-  return INITIAL_ALERTS;
 }
 
 async function writeAlerts(alerts: SystemAlert[]) {
-  await fs.promises.writeFile(ALERTS_FILE, JSON.stringify(alerts, null, 2), 'utf8');
+  const seen = new Set<string>();
+  const uniqueAlerts = alerts.filter(a => {
+    if (!a || !a.id) return false;
+    if (seen.has(a.id)) return false;
+    seen.add(a.id);
+    return true;
+  });
+
+  if (uniqueAlerts.length) {
+    const { error: upsertErr } = await supabase
+      .from(ALERTS_TABLE)
+      .upsert(uniqueAlerts.map(a => ({ id: a.id, data: a })), { onConflict: 'id' });
+    if (upsertErr) throw new Error(`Supabase alerts upsert failed: ${upsertErr.message}`);
+  }
+
+  const idsToKeep = uniqueAlerts.map(a => a.id);
+  const del = supabase.from(ALERTS_TABLE).delete();
+  const { error: delErr } = idsToKeep.length
+    ? await del.not('id', 'in', `(${idsToKeep.map(id => `"${id}"`).join(',')})`)
+    : await del.neq('id', '__none__');
+  if (delErr) throw new Error(`Supabase alerts cleanup failed: ${delErr.message}`);
 }
 
 // Lazy-loaded pdf-parse module cache.
@@ -257,7 +370,7 @@ app.post('/api/pos/sync', async (req, res) => {
     const pos = req.body as PO[];
     if (Array.isArray(pos)) {
       await writePOs(pos);
-      console.log(`Sync complete: ${pos.length} POs restored to pos-db.json.`);
+      console.log(`Sync complete: ${pos.length} POs restored to Supabase (pos_db).`);
       res.json({ success: true, count: pos.length });
     } else {
       res.status(400).json({ error: 'Body must be an array of PO objects.' });
@@ -273,7 +386,7 @@ app.post('/api/alerts/sync', async (req, res) => {
     const alerts = req.body as SystemAlert[];
     if (Array.isArray(alerts)) {
       await writeAlerts(alerts);
-      console.log(`Sync complete: ${alerts.length} alerts restored to alerts-db.json.`);
+      console.log(`Sync complete: ${alerts.length} alerts restored to Supabase (alerts_db).`);
       res.json({ success: true, count: alerts.length });
     } else {
       res.status(400).json({ error: 'Body must be an array of Alert objects.' });
