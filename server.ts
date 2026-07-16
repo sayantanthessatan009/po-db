@@ -861,6 +861,20 @@ Guidelines for multi-turn conversational response:
 // VITE AND SITE SERVING FLOW
 // -------------------------------------------------------------
 
+// Register production static-serving routes UNCONDITIONALLY at module load.
+// This must run regardless of isMain, because on Vercel this file is only
+// ever `import`ed (never executed directly) — the isMain-gated code below
+// never fires there. If this block lived inside integrateServer(), Vercel
+// would never register these routes, and every non-/api/* request would
+// fall through to Express's default "Cannot GET /".
+if (process.env.NODE_ENV === 'production') {
+  const distPath = path.join(process.cwd(), 'dist');
+  app.use(express.static(distPath));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
+
 async function integrateServer() {
   if (process.env.NODE_ENV !== 'production') {
     // In development mode, bootstrap Vite in middlewareMode so the preview window refreshes properly
@@ -870,14 +884,8 @@ async function integrateServer() {
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    // Serve static files from compiled dist folder in production
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
   }
+  // Production static routes are already registered above at module load.
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`PO Dashboard application booting successfully...`);
