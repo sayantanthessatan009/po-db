@@ -40,6 +40,7 @@ import ParserSection from './components/ParserSection';
 import POViewer from './components/POViewer';
 import AICopilotChat from './components/AICopilotChat';
 import { isSupabaseConfigured, syncPOToSupabase, syncAllPOsToSupabase, fetchPOsFromSupabase, deletePOFromSupabase, setSupabaseCredentials, saveSupabaseCredentialsToLocalStorage, clearSupabaseCredentialsFromLocalStorage } from './lib/supabase';
+import { Analytics } from '@vercel/analytics/react';
 
 // Helper function to decode Markdown response from Gemini into a beautiful UI without external markdown package overheads
 function renderMarkdown(md: string) {
@@ -2352,6 +2353,7 @@ ALTER TABLE purchase_orders DISABLE ROW LEVEL SECURITY;`);
           </div>
         </div>
       )}
+      <Analytics />
     </div>
   );
 }
