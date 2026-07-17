@@ -19,34 +19,60 @@ app.use(express.json({ limit: '10mb' }));
 const DB_FILE = path.join(process.cwd(), 'pos-db.json');
 const ALERTS_FILE = path.join(process.cwd(), 'alerts-db.json');
 
-// Initialize local DB files if they don't exist
+// NOTE ON PERSISTENCE STRATEGY:
+// This server also writes POs/Alerts to local JSON files (pos-db.json / alerts-db.json)
+// as a convenience cache for local/dev usage. That local filesystem is NOT durable on
+// serverless hosts (e.g. Vercel functions run on ephemeral, often read-only, containers
+// that can be recycled or replaced between requests/deployments) - a write in one
+// invocation is not guaranteed to be visible in the next. That mismatch was the root
+// cause of "new POs disappearing on refresh/relaunch": the client only accepted a save
+// as successful once the local file write on the server round-tripped, so on hosts where
+// that write silently failed/vanished, the PO was lost.
+//
+// Fix: Supabase Cloud (when configured, see src/lib/supabase.ts) is the durable source
+// of truth for cross-session/cross-deployment persistence. The local JSON file is now a
+// best-effort mirror only - failures to read/write it are logged but never block or fail
+// an API response, and requests never depend on it succeeding.
+
+// Initialize local DB files if they don't exist. Seed with empty arrays - this app
+// never ships with sample/demo Purchase Orders baked in.
 function initDB() {
   try {
     if (!fs.existsSync(DB_FILE)) {
       fs.writeFileSync(DB_FILE, JSON.stringify(INITIAL_POS, null, 2));
-      console.log('Seeded pos-db.json with initial TATA POs.');
+      console.log('Seeded pos-db.json (empty).');
     }
     if (!fs.existsSync(ALERTS_FILE)) {
       fs.writeFileSync(ALERTS_FILE, JSON.stringify(INITIAL_ALERTS, null, 2));
-      console.log('Seeded alerts-db.json with initial alarms.');
+      console.log('Seeded alerts-db.json (empty).');
     }
   } catch (error) {
-    console.error('Error seeding databases:', error);
+    // Non-fatal: on read-only serverless filesystems this is expected. Supabase remains
+    // the durable store; the in-memory fallback below keeps this server instance working.
+    console.warn('Local DB file seeding skipped (filesystem likely read-only/ephemeral):', (error as any)?.message || error);
   }
 }
 initDB();
+
+// In-memory fallback used only when the local filesystem is not writable/readable at all
+// (e.g. read-only serverless containers). This keeps a single running instance internally
+// consistent within its own lifetime even though it can't rely on disk; Supabase Cloud is
+// what actually keeps data durable across instances/deployments.
+let memoryPOs: PO[] | null = null;
+let memoryAlerts: SystemAlert[] | null = null;
 
 // Helper functions for reading/writing persistent data
 async function readPOs(): Promise<PO[]> {
   try {
     if (fs.existsSync(DB_FILE)) {
       const data = await fs.promises.readFile(DB_FILE, 'utf8');
-      return JSON.parse(data);
+      const parsed = data && data.trim() ? JSON.parse(data) : [];
+      if (Array.isArray(parsed)) return parsed;
     }
   } catch (e) {
-    console.error('Error reading PO db:', e);
+    console.warn('Error reading local PO db cache (falling back to in-memory/empty):', (e as any)?.message || e);
   }
-  return INITIAL_POS;
+  return memoryPOs ?? [];
 }
 
 async function writePOs(pos: PO[]) {
@@ -57,23 +83,36 @@ async function writePOs(pos: PO[]) {
     seen.add(p.id);
     return true;
   });
-  await fs.promises.writeFile(DB_FILE, JSON.stringify(uniquePos, null, 2), 'utf8');
+  // Always keep the in-memory fallback current for this running instance.
+  memoryPOs = uniquePos;
+  try {
+    await fs.promises.writeFile(DB_FILE, JSON.stringify(uniquePos, null, 2), 'utf8');
+  } catch (e) {
+    // Best-effort only - never throw. Supabase Cloud (client-side) is the durable store.
+    console.warn('Could not write local PO db cache (expected on ephemeral/serverless filesystems):', (e as any)?.message || e);
+  }
 }
 
 async function readAlerts(): Promise<SystemAlert[]> {
   try {
     if (fs.existsSync(ALERTS_FILE)) {
       const data = await fs.promises.readFile(ALERTS_FILE, 'utf8');
-      return JSON.parse(data);
+      const parsed = data && data.trim() ? JSON.parse(data) : [];
+      if (Array.isArray(parsed)) return parsed;
     }
   } catch (e) {
-    console.error('Error reading alerts db:', e);
+    console.warn('Error reading local alerts db cache (falling back to in-memory/empty):', (e as any)?.message || e);
   }
-  return INITIAL_ALERTS;
+  return memoryAlerts ?? [];
 }
 
 async function writeAlerts(alerts: SystemAlert[]) {
-  await fs.promises.writeFile(ALERTS_FILE, JSON.stringify(alerts, null, 2), 'utf8');
+  memoryAlerts = alerts;
+  try {
+    await fs.promises.writeFile(ALERTS_FILE, JSON.stringify(alerts, null, 2), 'utf8');
+  } catch (e) {
+    console.warn('Could not write local alerts db cache (expected on ephemeral/serverless filesystems):', (e as any)?.message || e);
+  }
 }
 
 // Lazy-loaded pdf-parse module cache.
