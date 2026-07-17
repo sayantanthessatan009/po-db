@@ -129,24 +129,23 @@ async function writePOs(pos: PO[]) {
     return true;
   });
 
-  // Mirrors the old "overwrite the whole file" semantics: upsert everything
-  // that should exist, then delete anything left over that isn't in the
-  // new set. Upsert-then-delete (rather than delete-then-insert) keeps the
-  // window where data could look "missing" to a concurrent reader as small
-  // as possible.
+  // UPSERT-ONLY. This used to also delete any row not present in the
+  // passed-in array, on the theory that callers always pass the "full"
+  // list. In practice several call sites (auto-heal on load, Pull's
+  // sync-back, Push) can fire with a stale, partial, or empty snapshot
+  // of `pos` - a slow fetch, a race between tabs, React StrictMode
+  // double-invoking an effect in dev, etc. Any one of those silently
+  // deleted whatever wasn't in that snapshot, including old, perfectly
+  // fine rows that had nothing to do with the sync that triggered it.
+  // Deletion is intentionally NOT a side effect of syncing anymore.
+  // The only way to remove a PO now is the explicit DELETE /api/pos/:id
+  // route, which acts on a single, user-confirmed id.
   if (uniquePos.length) {
     const { error: upsertErr } = await supabase
       .from(POS_TABLE)
       .upsert(uniquePos.map(p => ({ id: p.id, data: p })), { onConflict: 'id' });
     if (upsertErr) throw new Error(`Supabase PO upsert failed: ${upsertErr.message}`);
   }
-
-  const idsToKeep = uniquePos.map(p => p.id);
-  const del = supabase.from(POS_TABLE).delete();
-  const { error: delErr } = idsToKeep.length
-    ? await del.not('id', 'in', `(${idsToKeep.map(id => `"${id}"`).join(',')})`)
-    : await del.neq('id', '__none__');
-  if (delErr) throw new Error(`Supabase PO cleanup failed: ${delErr.message}`);
 }
 
 async function readAlerts(): Promise<SystemAlert[]> {
@@ -173,19 +172,13 @@ async function writeAlerts(alerts: SystemAlert[]) {
     return true;
   });
 
+  // UPSERT-ONLY - see writePOs() above for why the bulk-delete was removed.
   if (uniqueAlerts.length) {
     const { error: upsertErr } = await supabase
       .from(ALERTS_TABLE)
       .upsert(uniqueAlerts.map(a => ({ id: a.id, data: a })), { onConflict: 'id' });
     if (upsertErr) throw new Error(`Supabase alerts upsert failed: ${upsertErr.message}`);
   }
-
-  const idsToKeep = uniqueAlerts.map(a => a.id);
-  const del = supabase.from(ALERTS_TABLE).delete();
-  const { error: delErr } = idsToKeep.length
-    ? await del.not('id', 'in', `(${idsToKeep.map(id => `"${id}"`).join(',')})`)
-    : await del.neq('id', '__none__');
-  if (delErr) throw new Error(`Supabase alerts cleanup failed: ${delErr.message}`);
 }
 
 // Lazy-loaded pdf-parse module cache.
@@ -321,9 +314,12 @@ app.put('/api/pos/:id', async (req, res) => {
 app.delete('/api/pos/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    let pos = await readPOs();
-    pos = pos.filter(p => p.id !== id);
-    await writePOs(pos);
+    // Explicit, single-row delete - the only place a PO should ever be
+    // removed from pos_db2. writePOs() is upsert-only now (see above),
+    // so this route owns deletion on its own rather than relying on a
+    // full-list "sync" to infer what's missing.
+    const { error: delErr } = await supabase.from(POS_TABLE).delete().eq('id', id);
+    if (delErr) throw new Error(`Supabase PO delete failed: ${delErr.message}`);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
