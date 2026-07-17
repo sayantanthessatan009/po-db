@@ -529,6 +529,34 @@ export default function App() {
 
   // Update real status flow
   const handleUpdatePOStatus = async (id: string, status: PO['status']) => {
+    const existing = pos.find(p => p.id === id);
+    if (!existing) return;
+    const updated: PO = { ...existing, status };
+
+    // 1. Update local state immediately (dashboard + localStorage cache stay correct
+    //    even if the server-side file cache or network calls below fail).
+    setPOs(prev => prev.map(p => p.id === id ? updated : p));
+    if (selectedPO?.id === id) {
+      setSelectedPO(updated);
+    }
+
+    // 2. Persist to Supabase Cloud (durable source of truth).
+    if (supabaseConnected || isSupabaseConfigured()) {
+      setSupabaseMessage({ text: `Syncing status update for PO ${updated.orderNo || id} to Supabase Cloud...`, type: 'info' });
+      try {
+        const syncRes = await syncPOToSupabase(updated);
+        if (syncRes.success) {
+          setSupabaseMessage({ text: `Successfully synced status update for PO ${updated.orderNo || id} to Supabase Cloud.`, type: 'success' });
+        } else {
+          const formattedErr = formatSupabaseError(syncRes.error || 'Unknown error');
+          setSupabaseMessage({ text: `Failed to sync PO ${updated.orderNo || id} update: ${formattedErr}`, type: 'error' });
+        }
+      } catch (err: any) {
+        console.error('Supabase sync exception while updating status:', err);
+      }
+    }
+
+    // 3. Best-effort mirror to server-side local file cache.
     try {
       const response = await fetch(`/api/pos/${id}`, {
         method: 'PUT',
@@ -537,70 +565,94 @@ export default function App() {
       });
 
       if (response.ok) {
-        const updated = await response.json();
-        // Update state in lists
-        setPOs(prev => prev.map(p => p.id === id ? updated : p));
-        if (selectedPO?.id === id) {
-          setSelectedPO(updated);
-        }
-        
-        // Refresh Alerts
         const alertsRes = await fetch('/api/alerts');
         if (alertsRes.ok) {
           setAlerts(await alertsRes.json());
         }
-
-        // Lazy-sync to Supabase if configured 
-        if (supabaseConnected || isSupabaseConfigured()) {
-          setSupabaseMessage({ text: `Real-time Syncing status update for PO ${updated.orderNo || id} to Supabase Cloud...`, type: 'info' });
-          const syncRes = await syncPOToSupabase(updated);
-          if (syncRes.success) {
-            setSupabaseMessage({ text: `Successfully synced status update for PO ${updated.orderNo || id} to Supabase Cloud.`, type: 'success' });
-          } else {
-            const formattedErr = formatSupabaseError(syncRes.error || 'Unknown error');
-            setSupabaseMessage({ text: `Failed to sync PO ${updated.orderNo || id} update: ${formattedErr}`, type: 'error' });
-          }
-        }
+      } else {
+        console.warn('Server-side local cache update did not succeed; status change remains saved via Supabase/local browser storage.');
       }
     } catch (error) {
-      console.error('Failed to update status on server:', error);
+      console.warn('Server-side local cache unreachable while updating status; status change remains saved via Supabase/local browser storage.', error);
     }
   };
 
-  // Add parsed or newly generated Purchase Order
+  // Add parsed or newly generated Purchase Order.
+  // This is the "Confirm & Maintain PO" trigger fired right after a PO has been AI-parsed.
+  //
+  // IMPORTANT: the PO is written into local state (and therefore the local browser cache)
+  // FIRST, and Supabase Cloud sync is attempted right after - neither of those depends on
+  // the local server-side file API succeeding. Previously this function only updated the
+  // dashboard/maintenance list if the POST to the server's local JSON-file cache returned
+  // ok. On hosts with an ephemeral/read-only filesystem (e.g. serverless deployments) that
+  // write can fail or simply not persist across requests, which silently dropped brand-new
+  // POs - they'd vanish on refresh or app relaunch even though the user had just saved them.
+  // The server-side file write is now treated purely as a best-effort secondary cache.
   const handleAddParsedPO = async (po: PO) => {
+    if (!po || !po.orderNo) {
+      setSupabaseMessage({ text: 'Cannot save this PO: it is missing an Order No. Please re-check the AI extraction.', type: 'error' });
+      return;
+    }
+
+    const finalPO: PO = {
+      ...po,
+      id: po.id && po.id.trim() ? po.id : po.orderNo.replace(/\//g, '_'),
+    };
+
+    // 1. Update local state immediately so it shows up on the dashboard/maintenance list
+    //    right away, and gets written into the localStorage cache by the existing effect.
+    setPOs(prev => {
+      const withoutDupe = prev.filter(p => p.id !== finalPO.id);
+      return [finalPO, ...withoutDupe];
+    });
+    setActiveTab('maintenance');
+
+    // 2. Persist to Supabase Cloud - the durable, cross-session source of truth.
+    let supabaseSaved = false;
+    const cloudConfigured = supabaseConnected || isSupabaseConfigured();
+    if (cloudConfigured) {
+      setSupabaseMessage({ text: `Saving purchase order ${finalPO.orderNo} to Supabase Cloud...`, type: 'info' });
+      try {
+        const syncRes = await syncPOToSupabase(finalPO);
+        if (syncRes.success) {
+          supabaseSaved = true;
+          setSupabaseMessage({ text: `Purchase order ${finalPO.orderNo} saved and synced to Supabase Cloud.`, type: 'success' });
+        } else {
+          const formattedErr = formatSupabaseError(syncRes.error || 'Unknown error');
+          setSupabaseMessage({ text: `PO ${finalPO.orderNo} is saved in this browser, but Supabase Cloud sync failed: ${formattedErr}`, type: 'error' });
+        }
+      } catch (err: any) {
+        console.error('Supabase sync exception while saving new PO:', err);
+        setSupabaseMessage({ text: `PO ${finalPO.orderNo} is saved in this browser, but Supabase Cloud sync threw an error: ${err.message || err}`, type: 'error' });
+      }
+    }
+
+    // 3. Best-effort mirror to the server's local JSON-file cache (useful for local/dev
+    //    persistence; never blocks or reverts the save above if it fails).
     try {
       const response = await fetch('/api/pos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(po)
+        body: JSON.stringify(finalPO)
       });
 
       if (response.ok) {
-        const addedPO = await response.json();
-        setPOs(prev => [addedPO, ...prev]);
-        setActiveTab('maintenance');
-        
-        // Refresh Alerts
+        // Refresh Alerts (auto-generated alerts may have been created server-side)
         const alertsRes = await fetch('/api/alerts');
         if (alertsRes.ok) {
           setAlerts(await alertsRes.json());
         }
-
-        // Sync in cloud database (Supabase)
-        if (supabaseConnected || isSupabaseConfigured()) {
-          setSupabaseMessage({ text: `Real-time Syncing new purchase order ${addedPO.orderNo || addedPO.id} to Supabase Cloud...`, type: 'info' });
-          const syncRes = await syncPOToSupabase(addedPO);
-          if (syncRes.success) {
-            setSupabaseMessage({ text: `Successfully synced new purchase order ${addedPO.orderNo || addedPO.id} to Supabase Cloud!`, type: 'success' });
-          } else {
-            const formattedErr = formatSupabaseError(syncRes.error || 'Unknown error');
-            setSupabaseMessage({ text: `Failed to sync new PO ${addedPO.orderNo || addedPO.id} to Supabase: ${formattedErr}`, type: 'error' });
-          }
-        }
+      } else {
+        console.warn('Server-side local cache write for new PO did not succeed; relying on Supabase/local browser storage instead.');
       }
     } catch (error) {
-      console.error('Failed to commit parsed PO to server:', error);
+      console.warn('Server-side local cache unreachable while saving new PO; PO remains saved via Supabase/local browser storage.', error);
+    }
+
+    if (!cloudConfigured) {
+      setSupabaseMessage({ text: `PO ${finalPO.orderNo} saved locally in this browser. Configure Supabase Cloud in Settings so it also persists across devices, refreshes, and app relaunches.`, type: 'info' });
+    } else if (!supabaseSaved) {
+      // Already messaged above with the specific error; nothing more to do.
     }
   };
 
@@ -609,27 +661,35 @@ export default function App() {
     e.stopPropagation();
     if (!confirm('Are you sure you want to delete this purchase contract?')) return;
 
+    // 1. Remove from local state immediately.
+    setPOs(prev => prev.filter(p => p.id !== id));
+    if (selectedPO?.id === id) {
+      setSelectedPO(null);
+    }
+
+    // 2. Delete from Supabase Cloud (durable source of truth).
+    if (supabaseConnected || isSupabaseConfigured()) {
+      setSupabaseMessage({ text: `Syncing deletion of PO ${id} with Supabase Cloud...`, type: 'info' });
+      try {
+        const syncSuccess = await deletePOFromSupabase(id);
+        if (syncSuccess) {
+          setSupabaseMessage({ text: `Successfully deleted PO ${id} from Supabase Cloud!`, type: 'success' });
+        } else {
+          setSupabaseMessage({ text: `Failed to delete PO ${id} from Supabase Cloud.`, type: 'error' });
+        }
+      } catch (err: any) {
+        console.error('Supabase delete exception:', err);
+      }
+    }
+
+    // 3. Best-effort mirror to server-side local file cache.
     try {
       const response = await fetch(`/api/pos/${id}`, { method: 'DELETE' });
-      if (response.ok) {
-        setPOs(prev => prev.filter(p => p.id !== id));
-        if (selectedPO?.id === id) {
-          setSelectedPO(null);
-        }
-        
-        // Sync delete with Supabase
-        if (supabaseConnected || isSupabaseConfigured()) {
-          setSupabaseMessage({ text: `Syncing deletion of PO ${id} with Supabase Cloud...`, type: 'info' });
-          const syncSuccess = await deletePOFromSupabase(id);
-          if (syncSuccess) {
-            setSupabaseMessage({ text: `Successfully deleted PO ${id} from Supabase Cloud!`, type: 'success' });
-          } else {
-            setSupabaseMessage({ text: `Failed to delete PO ${id} from Supabase Cloud.`, type: 'error' });
-          }
-        }
+      if (!response.ok) {
+        console.warn('Server-side local cache deletion did not succeed; deletion remains applied via Supabase/local browser storage.');
       }
     } catch (error) {
-      console.error('Failed to delete PO:', error);
+      console.warn('Server-side local cache unreachable while deleting PO; deletion remains applied via Supabase/local browser storage.', error);
     }
   };
 
