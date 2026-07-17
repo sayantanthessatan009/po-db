@@ -6,132 +6,13 @@ interface ParserSectionProps {
   onAddParsedPO: (po: PO) => void;
 }
 
-// Preset samples modeled after the TATA files to make testing seamless and highly impressive!
-const SAMPLES = {
-  bearingHousing: `TATA STEEL LIMITED, KALINGANAGAR INDUSTRIAL ESTATE, DUBURI, JAJPUR PIN-755026, ORISSA
-PURCHASE ORDER
-Order No. :- 2100970424/175
-Order Date :- 23.11.2025
-Release Date :- 18.03.2026
-Contact Person :- Sneha Bagchi
-E-Mail :- 163760@tatasteel.com
-Phone No :- 8092085871
-Collective No :- 921728213
-Validity Start Date :- 23.11.2025
-Validity End Date :- 18.07.2026
-
-Vendor Code :- P056
-PRECISION SPARES MFG CO
-A/1/4,DIAMOND PARK, P.O. JOKA, PS - THAKURPUKUR, KOLKATA, West Bengal, Pin Code: 700104
-E-Mail :- precision.spares@yahoo.co.in
-
-Item No.   :- 00010   Total Qty  :- 8.000Set
-Gross Price :- 73,940.00 INR Per1 Set
-Material No :- 5628A4418 All CGST-SGST/IGST @ 18% Creditable
-Material Desc :- TP AXLE BEARING HOUSING ASSEMB ,K-2-0001
-Material Group :- 307
-Material Group Desc :- DRAWING MECHANICAL
-
-Delivery date: Day 16.04.2026
-Unloading Point: Blast Furc Mech
-
-Item Charges:
-Gross Price 73,940.000 INR
-Packaging charge (%) 2.00 %
-IN: Integrated GST 18.00 %
-Total Value: 711,953.470 INR
-
-Payment Term: 100% within 45 days of satisfactory receipt of Material
-Delivery Terms: Ex Works 3PL`,
-
-  earthInsulators: `TATA STEEL LIMITED, TISCO WORKS GENERAL OFFICE BISTUPUR, JAMSHEDPUR, JHARKHAND
-PURCHASE ORDER
-Order No. :- 2101010485/101
-Order Date :- 22.05.2026
-Release Date :- 22.05.2026
-Contact Person :- Ankit Kumar
-E-Mail :- 812559@tatasteel.com
-
-Vendor Code :- P056
-PRECISION SPARES MFG CO, KOLKATA
-E-Mail :- precision.spares@yahoo.co.in
-Quotation :- PS26/89 A /09.05.2026
-
-Item No. :- 00010 Total Qty :- 30.000NOS
-Gross Price :- 380.00 INR Per1 NOS
-Material No :- 5531A0320 All CGST-SGST/IGST @ 18% Creditable
-Material Desc :- CRANE ACCES; INSULATOR, GH50 terminals
-Material Group :- 241
-Material Group Desc :- EOT CRANES & ACCESS.
-Delivery date Day 22.08.2026
-Unloading Point : CP10-11 IEM
-
-Item No. :- 00020 Total Qty :- 22.000NOS
-Gross Price :- 380.00 INR Per1 NOS
-Material No :- 5531A0322 All CGST-SGST/IGST @ 18% Creditable
-Material Desc :- CRANE ACCES; INSULATOR,VAHLE,101850
-Delivery date Day 22.08.2026
-
-Payment Term : 100% within 45 days of satisfactory receipt of Material`,
-
-  hardwareNuts: `TATA STEEL LIMITED, TGS Gamharia, Adityapur, Gamharia - 831001, Jharkhand
-PURCHASE ORDER
-Order No. :- 3900007599/146
-Order Date :- 16.10.2018
-Release Date :- 29.04.2026
-Contact Person :- B Ravindra Kumar
-
-Vendor Code :- P056
-PRECISION SPARES MFG CO, KOLKATA
-
-Item No. :- 00010 Total Qty :- 1.000NOS
-Gross Price :- 12.11 INR Per1 NOS
-Material No :- 0094TG014231 All CGST-SGST/IGST @ 18% Creditable
-Material Desc :- CASTELLATED NUT M8 DIN 935 8
-Material Group :- 243
-Material Group Desc :- FASTENERS
-Delivery date Day 15.12.2018
-Unloading Point: Project stores
-
-Item No. :- 00020 Total Qty :- 12.000NOS
-Gross Price :- 17.61 INR Per1 NOS
-Material No :- 0094A0029 All CGST-SGST/IGST @ 18% Creditable
-Material Desc :- CASTLE NUT M16 DIN935 8
-
-Delivery terms: Free on road TGS
-Payment Term : 100% in 30 days of satisfactory receipt`
-};
-
 export default function ParserSection({ onAddParsedPO }: ParserSectionProps) {
-  const [selectedFile, setSelectedFile] = useState<{ name: string; size: string; base64?: string; presetKey?: keyof typeof SAMPLES } | null>(null);
+  const [selectedFile, setSelectedFile] = useState<{ name: string; size: string; base64?: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successPO, setSuccessPO] = useState<PO | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const handlePresetSelect = (key: keyof typeof SAMPLES) => {
-    let name = '';
-    let size = '112 KB';
-    if (key === 'bearingHousing') {
-      name = 'TATA_STEEL_PO_2100970424.pdf';
-      size = '184 KB';
-    } else if (key === 'earthInsulators') {
-      name = 'TATA_STEEL_PO_2101010485.pdf';
-      size = '132 KB';
-    } else {
-      name = 'TATA_STEEL_PO_3900007599.pdf';
-      size = '94 KB';
-    }
-
-    setSelectedFile({
-      name,
-      size,
-      presetKey: key
-    });
-    setErrorMsg(null);
-    setSuccessPO(null);
-  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -215,8 +96,6 @@ export default function ParserSection({ onAddParsedPO }: ParserSectionProps) {
       const payload: { ocrText?: string; pdfData?: string; groqApiKey?: string } = { groqApiKey };
       if (selectedFile.base64) {
         payload.pdfData = selectedFile.base64;
-      } else if (selectedFile.presetKey) {
-        payload.ocrText = SAMPLES[selectedFile.presetKey];
       }
 
       const response = await fetch('/api/pos/upload', {
@@ -260,44 +139,6 @@ export default function ParserSection({ onAddParsedPO }: ParserSectionProps) {
       <div className="p-5 grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Input Panel */}
         <div id="parser-input-panel" className="lg:col-span-3 space-y-5">
-          {/* Presets Selection */}
-          <div className="flex flex-wrap gap-2 items-center">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mr-2">Sample POs:</span>
-            <button
-              id="preset-bearing"
-              onClick={() => handlePresetSelect('bearingHousing')}
-              className={`text-xs px-2.5 py-1.5 rounded-lg border font-semibold tracking-wide transition-all cursor-pointer ${
-                selectedFile?.presetKey === 'bearingHousing'
-                  ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 font-bold'
-                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold'
-              }`}
-            >
-              Axle Bearing PO
-            </button>
-            <button
-              id="preset-insulators"
-              onClick={() => handlePresetSelect('earthInsulators')}
-              className={`text-xs px-2.5 py-1.5 rounded-lg border font-semibold tracking-wide transition-all cursor-pointer ${
-                selectedFile?.presetKey === 'earthInsulators'
-                  ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 font-bold'
-                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold'
-              }`}
-            >
-              Insulators MRO PO
-            </button>
-            <button
-              id="preset-hardware"
-              onClick={() => handlePresetSelect('hardwareNuts')}
-              className={`text-xs px-2.5 py-1.5 rounded-lg border font-semibold tracking-wide transition-all cursor-pointer ${
-                selectedFile?.presetKey === 'hardwareNuts'
-                  ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 font-bold'
-                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 font-bold'
-              }`}
-            >
-              Hardware Nuts PO
-            </button>
-          </div>
-
           {/* Interactive File Drop area or attachment card (No copy paste feature) */}
           {!selectedFile ? (
             <div
