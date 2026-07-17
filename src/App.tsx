@@ -598,9 +598,21 @@ export default function App() {
             setSupabaseMessage({ text: `Failed to sync new PO ${addedPO.orderNo || addedPO.id} to Supabase: ${formattedErr}`, type: 'error' });
           }
         }
+      } else {
+        // Was previously swallowed silently - surface the real reason the save failed
+        let serverErr = `HTTP ${response.status}`;
+        try {
+          const errBody = await response.json();
+          serverErr = errBody.error || serverErr;
+        } catch {
+          // response wasn't JSON, keep the status-based message
+        }
+        console.error('POST /api/pos rejected:', serverErr, po);
+        setSupabaseMessage({ text: `Failed to save parsed PO "${po.orderNo || po.id || '(unknown)'}": ${serverErr}`, type: 'error' });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to commit parsed PO to server:', error);
+      setSupabaseMessage({ text: `Network error while saving parsed PO: ${error.message || error}`, type: 'error' });
     }
   };
 
@@ -1891,7 +1903,7 @@ export default function App() {
                               ₹{(row.forwardingCharges !== undefined ? row.forwardingCharges : 0).toLocaleString()}
                             </td>
                             <td className="py-3 px-3 text-center font-mono">
-                              {row.delDays !== undefined && row.delDays !== '' ? (
+                              {row.delDays !== undefined && row.delDays !== null ? (
                                 <span className="bg-amber-50 dark:bg-amber-950/40 text-amber-850 dark:text-amber-400 font-bold px-1.5 py-0.5 rounded">
                                   {row.delDays} days
                                 </span>

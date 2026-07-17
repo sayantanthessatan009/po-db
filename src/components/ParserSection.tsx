@@ -240,11 +240,19 @@ export default function ParserSection({ onAddParsedPO }: ParserSectionProps) {
   };
 
   const handleCommitParsedPO = () => {
-    if (successPO) {
-      onAddParsedPO(successPO);
-      setSuccessPO(null);
-      setSelectedFile(null);
+    if (!successPO) return;
+
+    // The backend hard-rejects (400) any PO missing id/orderNo - catch that
+    // here instead of silently losing the save, since AI parsing sometimes
+    // returns an empty orderNo field.
+    if (!successPO.id || !successPO.orderNo || !successPO.orderNo.trim()) {
+      setErrorMsg('AI parsing did not extract a valid Order No for this document. Please check the parsed preview and correct the Order No before saving, or re-parse.');
+      return;
     }
+
+    onAddParsedPO(successPO);
+    setSuccessPO(null);
+    setSelectedFile(null);
   };
 
   return (
