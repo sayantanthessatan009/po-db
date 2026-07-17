@@ -27,13 +27,13 @@ app.use(express.json({ limit: '10mb' }));
 //
 // Expected tables (create these once in the Supabase SQL editor):
 //
-//   create table pos_db (
+//   create table pos_db2 (
 //     id text primary key,
 //     data jsonb not null,
 //     created_at timestamptz not null default now()
 //   );
 //
-//   create table alerts_db (
+//   create table alerts_db2 (
 //     id text primary key,
 //     data jsonb not null,
 //     created_at timestamptz not null default now()
@@ -55,8 +55,8 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-const POS_TABLE = 'pos_db';
-const ALERTS_TABLE = 'alerts_db';
+const POS_TABLE = 'pos_db2';
+const ALERTS_TABLE = 'alerts_db2';
 
 // Idempotent one-time seed guard. Runs at most once per warm container;
 // serverless cold starts will re-check but the count-based guard inside
@@ -370,7 +370,7 @@ app.post('/api/pos/sync', async (req, res) => {
     const pos = req.body as PO[];
     if (Array.isArray(pos)) {
       await writePOs(pos);
-      console.log(`Sync complete: ${pos.length} POs restored to Supabase (pos_db).`);
+      console.log(`Sync complete: ${pos.length} POs restored to Supabase (pos_db2).`);
       res.json({ success: true, count: pos.length });
     } else {
       res.status(400).json({ error: 'Body must be an array of PO objects.' });
@@ -386,7 +386,7 @@ app.post('/api/alerts/sync', async (req, res) => {
     const alerts = req.body as SystemAlert[];
     if (Array.isArray(alerts)) {
       await writeAlerts(alerts);
-      console.log(`Sync complete: ${alerts.length} alerts restored to Supabase (alerts_db).`);
+      console.log(`Sync complete: ${alerts.length} alerts restored to Supabase (alerts_db2).`);
       res.json({ success: true, count: alerts.length });
     } else {
       res.status(400).json({ error: 'Body must be an array of Alert objects.' });
